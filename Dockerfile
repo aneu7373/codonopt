@@ -1,10 +1,24 @@
-FROM python:3.11-slim
+FROM mambaorg/micromamba:1.5.6
 
-RUN apt-get update && apt-get install -y viennarna
+ENV MAMBA_DOCKERFILE_ACTIVATE=1
+ENV PYTHONUNBUFFERED=1
+
+# Install dependencies
+RUN micromamba install -y -n base -c conda-forge -c bioconda \
+    python=3.11 \
+    viennarna \
+    biopython \
+    pandas \
+    numpy \
+    tqdm && \
+    micromamba clean -a -y
 
 WORKDIR /app
-COPY requirements.txt .
-RUN pip install -r requirements.txt
 
 COPY codonopt/ codonopt/
-ENTRYPOINT ["python", "-m", "codonopt.main"]
+
+ENV PYTHONPATH=/app
+
+# IMPORTANT: use micromamba run
+ENTRYPOINT ["micromamba", "run", "-n", "base", "python", "-m", "codonopt.main"]
+
