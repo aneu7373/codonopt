@@ -1,4 +1,4 @@
-# CodonOpt — Codon Optimization Platform with RNAfold Integration
+# CodonOpt — Codon Optimization Platform with Optional RNAfold Integration
 
 CodonOpt is a reproducible codon optimization platform for DNA sequences that supports custom codon usage tables, ORF-preserving optimization, GC-content constraints, motif and restriction site avoidance, Kleinbub or unbiased codon sampling, generation of multiple unique optimized sequences, RNA secondary structure evaluation via RNAfold, and a comprehensive TSV report of all computed metrics. The platform is fully containerized using Docker and can be run identically on a local machine, shared workstation, or HPC environment.
 
@@ -15,7 +15,7 @@ CodonOpt is designed for users who want fine-grained control over codon choice w
 - Motif and restriction site avoidance
 - Unbiased or Kleinbub-style codon sampling
 - Multiple unique optimized sequences per input
-- RNA secondary structure metrics via RNAfold
+- Optional RNA secondary structure metrics via RNAfold
 - Detailed TSV metrics report
 - Fully containerized execution with Docker
 
@@ -36,7 +36,7 @@ CodonOpt is designed for users who want fine-grained control over codon choice w
 `-- SelectedCodonTables.xlsx
 
 ```
-The codonopt/ directory contains all application logic. The Dockerfile defines a fully reproducible runtime environment, including RNAfold. SelectedCodonTables.xlsx is an example codon usage table file.
+The codonopt/ directory contains all application logic. SelectedCodonTables.xlsx is an example codon usage table file.
 
 ---
 
@@ -66,7 +66,7 @@ Frequency: Relative codon usage (values do not need to sum to 1)
 
 Example:
 
-AA | Codon | Frequency  
+AA | Codon | Fraction  
 A  | GCT   | 0.27  
 A  | GCC   | 0.40  
 A  | GCA   | 0.23  
@@ -82,7 +82,7 @@ Docker is the recommended way to run CodonOpt, as it guarantees that RNAfold and
 
 From the repository root, build the Docker image:
 
-docker build -t codonopt:1.0 .
+docker build -t codonopt:latest .
 
 ---
 
@@ -157,9 +157,9 @@ CodonOpt generates FASTA files for each optimized sequence and a TSV file contai
 output/
 ├── optimized_001.fasta
 ├── optimized_002.fasta
-└── metrics.tsv
+└── report.tsv
 ```
-The metrics TSV contains one row per sequence and includes sequence length, GC content, codon adaptation metrics, codon usage entropy, forbidden codon counts, motif violation counts, RNAfold minimum free energy (ΔG), RNAfold structure string, and ORF validation status.
+The report TSV contains one row per sequence and includes sequence length, GC content, codon adaptation metrics, codon usage entropy, forbidden codon counts, motif violation counts, RNAfold minimum free energy (ΔG), RNAfold structure string, and ORF validation status.
 
 ---
 
