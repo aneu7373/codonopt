@@ -1,4 +1,4 @@
-# CodonOpt — Codon Optimization Platform with Optional RNAfold Integration
+# Codon the Barbarian — Codon Optimization Platform with Optional RNAfold Integration
 
 CodonOpt is a reproducible codon optimization platform for DNA sequences that supports custom codon usage tables, ORF-preserving optimization, GC-content constraints, motif and restriction site avoidance, Kleinbub or unbiased codon sampling, generation of multiple unique optimized sequences, RNA secondary structure evaluation via RNAfold, and a comprehensive TSV report of all computed metrics. The platform is fully containerized using Docker and can be run identically on a local machine, shared workstation, or HPC environment.
 
