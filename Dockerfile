@@ -1,24 +1,18 @@
+
 FROM mambaorg/micromamba:1.5.6
 
-ENV MAMBA_DOCKERFILE_ACTIVATE=1
-ENV PYTHONUNBUFFERED=1
-
-# Install dependencies
-RUN micromamba install -y -n base -c conda-forge -c bioconda \
-    python=3.11 \
-    viennarna \
-    biopython \
-    pandas \
-    numpy \
-    tqdm && \
-    micromamba clean -a -y
+ENV MAMBA_DOCKERFILE_ACTIVATE=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
 
 WORKDIR /app
+COPY environment.yml /app/environment.yml
+
+RUN micromamba env create -f /app/environment.yml && \
+    micromamba clean --all -y
 
 COPY codonopt/ codonopt/
-
 ENV PYTHONPATH=/app
 
-# IMPORTANT: use micromamba run
-ENTRYPOINT ["micromamba", "run", "-n", "base", "python", "-m", "codonopt.main"]
+ENTRYPOINT ["/opt/conda/envs/codonopt/bin/python", "-m", "codonopt.cli"]
 
