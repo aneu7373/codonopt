@@ -1,0 +1,14 @@
+
+name: codonopt
+channels:
+  - conda-forge
+  - bioconda
+channel_priority: strict
+dependencies:
+  - python=3.11
+  - viennarna=2.6.*        # or >=2.5 if you prefer
+  - biopython=1.84
+  - pandas=2.2.*
+  - numpy=1.26.*
+  - tqdm=4.66.*
+  - openpyxl=3.1.*
