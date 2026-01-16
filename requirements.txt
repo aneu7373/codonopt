@@ -1,6 +1,0 @@
-biopython
-pandas
-numpy
-openpyxl
-tqdm
-
