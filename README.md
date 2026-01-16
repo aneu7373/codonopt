@@ -1,99 +1,76 @@
-CodonOpt — Codon Optimization Platform with RNAfold Integration
+**CodonOpt — Codon Optimization Platform with RNAfold Integration**
 
-CodonOpt is a reproducible codon optimization platform for DNA sequences that supports:
+CodonOpt is a reproducible codon optimization platform for DNA sequences that supports custom codon usage tables, ORF-preserving optimization, GC-content constraints, motif and restriction site avoidance, Kleinbub or unbiased codon sampling, generation of multiple unique optimized sequences, RNA secondary structure evaluation via RNAfold, and a comprehensive TSV report of all computed metrics. The platform is fully containerized using Docker and can be run identically on a local machine, shared workstation, or HPC environment.
 
-Custom codon usage tables
+CodonOpt is designed for users who want fine-grained control over codon choice while ensuring biological validity, reproducibility, and downstream compatibility with cloning, expression, and RNA structure considerations.
 
-ORF-preserving optimization
+**Features**
 
-GC-content constraints
+CodonOpt provides ORF-preserving codon optimization, supports custom codon usage tables supplied by the user, enforces GC-content bounds, allows explicit exclusion of specific codons, avoids user-defined motifs and restriction sites, supports unbiased or Kleinbub-style probabilistic codon sampling, generates multiple unique optimized sequences per input, computes RNA secondary structure metrics using RNAfold, outputs a detailed TSV report of all metrics, and runs reproducibly via Docker.
 
-Motif and restriction site avoidance
+**Repository Structure**
 
-Kleinbub or unbiased codon sampling
+The repository is organized as follows:
 
-Multiple unique optimized sequences per input
-
-RNA secondary structure evaluation via RNAfold
-
-Fully containerized execution via Docker
-
-Features
-
-✅ ORF-preserving codon optimization
-
-✅ Custom codon usage tables (Excel / TSV-based)
-
-✅ GC-content bounds
-
-✅ Codon exclusion lists
-
-✅ Motif & restriction site avoidance
-
-✅ Multiple optimized outputs per sequence
-
-✅ RNAfold secondary structure metrics
-
-✅ TSV report of all metrics
-
-✅ Dockerized & HPC-friendly
-
-Repository Structure
 .
 ├── codonopt/
-│   ├── main.py                 # CLI entrypoint
+│   ├── main.py
 │   ├── optimizer/
 │   ├── metrics/
 │   │   └── rnafold.py
 │   └── utils/
 ├── Dockerfile
 ├── README.md
-└── SelectedCodonTables.xlsx    # Example codon usage tables
+└── SelectedCodonTables.xlsx
 
-Codon Usage Tables (IMPORTANT)
-Where to put your codon table
 
-You must provide a codon usage table file when running CodonOpt.
+The codonopt/ directory contains all application logic. The Dockerfile defines a fully reproducible runtime environment, including RNAfold. SelectedCodonTables.xlsx is an example codon usage table file.
 
-The file can live anywhere on your system
+**Codon Usage Tables (Required)**
 
-When using Docker, it must be mounted into the container
-
-Recommended:
+CodonOpt requires a codon usage table file to be provided at runtime. The file can live anywhere on your system, but when running via Docker it must be mounted into the container. A common and recommended approach is to keep codon tables in a dedicated directory such as:
 
 codon_tables/
 └── SelectedCodonTables.xlsx
 
-Codon table format (Excel)
 
-Each sheet corresponds to a codon usage table (e.g. organism or expression system).
+The path to this file is supplied using the --codon-xlsx argument.
 
-Required columns:
+**Codon Table Format**
 
-Column	Description
-AA	Amino acid (1-letter or 3-letter)
-Codon	DNA codon (uppercase, e.g. GCT)
-Frequency	Relative usage (does not need to sum to 1)
+Codon usage tables are provided as an Excel file. Each sheet corresponds to a single codon usage table, for example an organism or expression system. The sheet name is selected using the --sheet argument.
 
-Example:
+Each sheet must contain the following columns:
 
-AA	Codon	Frequency
-A	GCT	0.27
-A	GCC	0.40
-A	GCA	0.23
-A	GCG	0.10
+AA: Amino acid (1-letter or 3-letter code)
 
-You select the sheet using --sheet.
+Codon: DNA codon (uppercase, e.g. GCT)
 
-Installation (Docker — Recommended)
-Build the image
+Frequency: Relative codon usage (values do not need to sum to 1)
 
-From the repository root:
+An example row layout is:
+
+AA | Codon | Frequency
+A | GCT | 0.27
+A | GCC | 0.40
+A | GCA | 0.23
+A | GCG | 0.10
+
+CodonOpt will normalize frequencies internally as needed.
+
+**Installation Using Docker (Recommended)**
+
+Docker is the recommended way to run CodonOpt, as it guarantees that RNAfold and all dependencies are installed correctly.
+
+From the repository root, build the Docker image:
 
 docker build -t codonopt:1.0 .
 
-Running CodonOpt (Docker)
-Minimal example
+**Running CodonOpt Using Docker**
+
+When running via Docker, you must mount any input files (DNA sequences and codon tables) into the container. The examples below assume you are running from a directory that contains your input files.
+
+Minimal Example
 docker run --rm \
   -v $(pwd):/data \
   codonopt:1.0 \
@@ -102,7 +79,7 @@ docker run --rm \
   --sheet ecoli \
   --out /data/output
 
-Typical full pipeline example
+Typical Full Pipeline Example
 docker run --rm \
   -v $(pwd):/data \
   codonopt:1.0 \
@@ -117,91 +94,73 @@ docker run --rm \
   --n 10 \
   --out /data/output
 
-Running CodonOpt (Native Python)
 
-Requires Python ≥3.10 and RNAfold installed and on $PATH
+In all Docker runs, input and output paths must be inside the mounted directory (for example /data).
 
-pip install -r requirements.txt
+**Running CodonOpt Without Docker**
+
+CodonOpt can also be run directly using Python, although this requires RNAfold to be installed and available on the system PATH.
+
+After installing dependencies, run:
+
 python -m codonopt.main \
   --dna input.fasta \
   --codon-xlsx SelectedCodonTables.xlsx \
   --sheet ecoli \
   --out output
 
-Command-line Arguments
-Argument	Description
---dna	Input DNA (FASTA file or raw sequence)
---codon-xlsx	Path to codon usage Excel file
---sheet	Sheet name to use
---gc-min	Minimum GC content (0–1)
---gc-max	Maximum GC content (0–1)
---avoid-codons	Codons to exclude
---avoid-motifs	DNA motifs / restriction sites to avoid
---optimization	unbiased or kleinbub
---n	Number of unique optimized sequences
---out	Output directory
---disable-rnafold	Skip RNAfold evaluation
-Outputs
-FASTA files
+
+*Using Docker is strongly recommended for reproducibility.*
+
+**Command-Line Arguments**
+
+The main command-line arguments are:
+
+--dna: Input DNA sequence, either as a FASTA file or a raw sequence string
+
+--codon-xlsx: Path to the codon usage Excel file
+
+--sheet: Name of the sheet within the Excel file to use
+
+--gc-min: Minimum allowed GC content (0–1)
+
+--gc-max: Maximum allowed GC content (0–1)
+
+--avoid-codons: One or more codons to exclude from optimization
+
+--avoid-motifs: One or more DNA motifs or restriction sites to avoid
+
+--optimization: Codon sampling strategy (unbiased or kleinbub)
+
+--n: Number of unique optimized sequences to generate
+
+--out: Output directory
+
+--disable-rnafold: Disable RNAfold secondary structure evaluation
+
+**Outputs**
+
+CodonOpt produces FASTA files for each optimized sequence and a TSV file containing metrics for all generated sequences.
+
+The output directory structure is:
+
 output/
 ├── optimized_001.fasta
 ├── optimized_002.fasta
-└── ...
-
-Metrics TSV (one row per sequence)
-output/
 └── metrics.tsv
 
 
-Included metrics:
+The metrics TSV contains one row per optimized sequence and includes sequence length, GC content, codon adaptation metrics, codon usage entropy, forbidden codon counts, motif violation counts, RNAfold minimum free energy (ΔG), RNAfold structure string, and ORF validation status.
 
-Sequence length
+**RNAfold Integration**
 
-GC content
+RNAfold from the ViennaRNA package is used to compute RNA secondary structure metrics, including minimum free energy and dot-bracket structure strings. RNAfold is installed automatically in the Docker image and is enabled by default. It can be disabled using the --disable-rnafold flag.
 
-Codon Adaptation Index (CAI)
-
-Codon usage entropy
-
-Forbidden codon count
-
-Motif violation count
-
-RNAfold MFE (ΔG)
-
-RNAfold structure string
-
-ORF validation status
-
-RNAfold Integration
-
-RNAfold (ViennaRNA) is used to compute:
-
-Minimum free energy (ΔG)
-
-Secondary structure
-
-RNAfold is:
-
-Automatically enabled if installed
-
-Installed in the Docker image
-
-Optional via --disable-rnafold
-
-To confirm RNAfold in Docker:
+To verify that RNAfold is available inside the Docker container, run:
 
 docker run --rm --entrypoint micromamba codonopt:1.0 \
   run -n base RNAfold --version
 
-Notes & Best Practices
+**Notes and Best Practices**
 
-Input DNA must be in-frame
-
-Stop codons are preserved
-
-ORFs are strictly conserved
-
-Codon usage tables should use DNA codons (not RNA)
-
-Use Docker for full reproducibility
+Input DNA sequences must be in frame. Start and stop codons are preserved, and ORFs are strictly conserved during optimization. Codon usage tables must use DNA codons rather than RNA codons. For consistent and reproducible results across systems, Docker execution is recommended.
