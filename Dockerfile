@@ -1,18 +1,17 @@
-
-FROM mambaorg/micromamba:1.5.6
-
-ENV MAMBA_DOCKERFILE_ACTIVATE=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+# Use a slim Python 3.11 base
+FROM python:3.11-slim
 
 WORKDIR /app
-COPY environment.yml /app/environment.yml
 
-RUN micromamba env create -f /app/environment.yml && \
-    micromamba clean --all -y
+# Install dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
+# Copy the whole codonopt package
 COPY codonopt/ codonopt/
-ENV PYTHONPATH=/app
 
-ENTRYPOINT ["/opt/conda/envs/codonopt/bin/python", "-m", "codonopt.cli"]
+# Copy optional README
+COPY README.md .
 
+# Entrypoint points to main.py
+ENTRYPOINT ["python", "-m", "codonopt.main"]
