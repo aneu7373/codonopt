@@ -1,182 +1,260 @@
-# Codon the Barbarian — Codon Optimization Platform with Optional RNAfold Integration
+# Codon the Barbarian
 
-CodonOpt is a reproducible codon optimization platform for DNA sequences that supports custom codon usage tables, ORF-preserving optimization, GC-content constraints, motif and restriction site avoidance, Kleinbub or unbiased codon sampling, generation of multiple unique optimized sequences, RNA secondary structure evaluation via RNAfold, and a comprehensive TSV report of all computed metrics. The platform is fully containerized using Docker and can be run identically on a local machine, shared workstation, or HPC environment.
+**Codon the Barbarian** is a flexible, batch-capable codon optimization and back-translation pipeline designed for real-world sequence design workflows. It supports DNA or protein FASTA inputs, organism-specific codon tables (via Excel), tunable optimization strategies, and detailed diagnostic output.
 
-CodonOpt is designed for users who want fine-grained control over codon choice while ensuring biological validity, reproducibility, and downstream compatibility with cloning, expression, and RNA structure considerations.
+The pipeline is designed to **maximize yield under complex constraints** rather than failing prematurely, while still making failures explicit and debuggable.
 
 ---
 
 ## Features
 
-- ORF-preserving codon optimization
-- Custom codon usage tables (Excel-based)
-- GC-content bounds
-- Explicit codon exclusion
-- Motif and restriction site avoidance
-- Unbiased or Kleinbub-style codon sampling
-- Multiple unique optimized sequences per input
-- Optional RNA secondary structure metrics via RNAfold
-- Detailed TSV metrics report
-- Fully containerized execution with Docker
+- Accepts **DNA CDS FASTA or protein FASTA** inputs
+- **Batch mode** via CSV or TSV for large-scale design
+- Codon tables loaded from **Excel (.xlsx) files**
+  - Optional sheet selection per batch row
+- Two optimization modes:
+  - **kleinbub (default)**: bounded backtracking, high yield
+  - strict: fast greedy optimization
+- Rich constraint support:
+  - GC content bounds
+  - Codons to avoid
+  - Motifs to avoid
+  - Maximum homopolymer length
+- Yield tuning:
+  - Automatic retries for failed designs
+  - Adjustable search effort
+- Deterministic reproducibility via seeds
+- Outputs:
+  - Single FASTA file with all successful designs
+  - TSV report with metrics and explicit failure reasons
 
 ---
 
-## Repository Structure
+## Installation
 
-```text
-.
-|-- codonopt/
-|   |-- main.py
-|   |-- optimizer/
-|   |-- metrics/
-|   |   |-- rnafold.py
-|   |-- utils/
-|-- Dockerfile
-|-- README.md
-`-- SelectedCodonTables.xlsx
+### Option 1: Docker (recommended)
 
-```
-The codonopt/ directory contains all application logic. SelectedCodonTables.xlsx is an example codon usage table file.
+Docker is the easiest way to run codonopt without worrying about dependencies.
+
+    git clone https://github.com/aneu7373/codonopt.git
+    cd codonopt
+    docker build -t codonopt .
 
 ---
 
-## Codon Usage Tables (Required)
+### Option 2: Local installation (advanced)
 
-CodonOpt requires a codon usage table file to be provided at runtime. The file can live anywhere on your system, but when running via Docker it must be mounted into the container.
+Requires Python 3.9 or newer.
 
-A recommended structure is:
-
-```text
-codon_tables/
-└── SelectedCodonTables.xlsx
-```
-The path to this file is supplied using the --codon-xlsx argument.
+    git clone https://github.com/aneu7373/codonopt.git
+    cd codonopt
+    pip install -r requirements.txt
 
 ---
 
-## Codon Table Format
+## Quick Start (Single Sequence)
 
-Codon usage tables are provided as an Excel file. Each sheet corresponds to a single codon usage table (for example an organism or expression system). The sheet name is selected using the --sheet argument.
+    docker run --rm \
+      -v $(pwd)/data:/data \
+      codonopt \
+      --sequence /data/example.fasta \
+      --codon-table /data/Ecoli.xlsx \
+      --out /data/results
 
-Each sheet must contain the following columns:
+Outputs:
 
-AA: Amino acid (1-letter or 3-letter code)  
-Codon: DNA codon (uppercase, e.g. GCT)  
-Frequency: Relative codon usage (values do not need to sum to 1)
+- results/optimized_sequences.fasta  
+- results/metrics.tsv  
+
+---
+
+## Batch Mode (Recommended)
+
+Batch mode allows you to specify **one row per design job** in a CSV or TSV file.
+
+### Minimal batch CSV
+
+    sequence,codon_table
+    /data/input.fasta,/data/Ecoli.xlsx
+
+### Full batch CSV (all supported options)
+
+    sequence,codon_table,codon_table_sheet,optimization_mode,avoid_codons,avoid_motifs,gc_min,gc_max,seed,n,max_tries_per_replicate,kleinbub_search_limit,backtrack_window
+    /data/input.fasta,/data/Ecoli.xlsx,Ecoli1,kleinbub,CTA|TAG,GAATTC|AAGCTT,0.4,0.6,42,10,50,400000,25
+
+Run batch mode:
+
+    docker run --rm \
+      -v $(pwd)/data:/data \
+      codonopt \
+      --batch-table /data/batch.csv \
+      --out /data/results \
+      --verbose
+
+---
+
+## Codon Tables
+
+Codon tables are provided as **Excel (.xlsx) files**.
+
+### Supported formats
+
+#### Codon usage table (recommended)
+
+| AA | Codon | Fraction |
+|----|-------|----------|
+| A  | GCT   | 0.18     |
+| A  | GCC   | 0.27     |
+| …  | …     | …        |
+
+Column names are flexible and may include:  
+AA, Amino Acid, Codon, Frequency, Fraction, Usage, or RSCU.
+
+#### Wide format
+
+| Amino Acid | Codons                  |
+|------------|-------------------------|
+| A          | GCT,GCC,GCA,GCG         |
+| C          | TGT,TGC                 |
+| *          | TAA,TAG,TGA             |
+
+---
+
+## Multiple Sheets
+
+If the Excel file has multiple sheets:
+
+- Specify the desired sheet via:
+  - codon_table_sheet (batch mode)
+  - --codon-table-sheet (single mode)
+- If omitted, the **first non-empty sheet** is used automatically.
+
+---
+
+## Optimization Modes
+
+### kleinbub (default, recommended)
+
+- Bounded backtracking search
+- Tries harder before declaring failure
+- Best for:
+  - Tight constraints
+  - Long proteins
+  - High-yield design
+
+### strict
+
+- Greedy, per-position retries
+- Faster, but may falsely report “impossible”
+- Useful for debugging
+
+Set per batch row:
+
+    optimization_mode
+    strict
+
+---
+
+## Yield Tuning (Getting N/N Outputs)
+
+By default, codonopt attempts to generate n sequences but does not guarantee success if constraints are tight.
+
+Tune yield using:
+
+| Parameter | Meaning | Typical Values |
+|----------|--------|----------------|
+| max_tries_per_replicate | Independent restarts per replicate | 25–100 |
+| kleinbub_search_limit | Total search steps per attempt | 200k–800k |
+| backtrack_window | Backtracking depth | 10–50 |
 
 Example:
 
-AA | Codon | Fraction  
-A  | GCT   | 0.27  
-A  | GCC   | 0.40  
-A  | GCA   | 0.23  
-A  | GCG   | 0.10  
-
-CodonOpt normalizes frequencies internally as needed.
-
----
-
-## Installation Using Docker (Recommended)
-
-Docker is the recommended way to run CodonOpt, as it guarantees that RNAfold and all dependencies are installed correctly.
-
-From the repository root, build the Docker image:
-
-docker build -t codonopt:latest .
-
----
-
-## Running CodonOpt Using Docker
-
-When running via Docker, you must mount any input files (DNA sequences and codon tables) into the container.
-
-Minimal example:
-
-docker run --rm \
-  -v $(pwd):/data \
-  codonopt:1.0 \
-  --dna ATGGCCATTGTAATGGGCCGCTGAAAGGGTGCCCGATAG \
-  --codon-xlsx /data/SelectedCodonTables.xlsx \
-  --sheet ecoli \
-  --out /data/output
-
-Typical full pipeline example:
-
-docker run --rm \
-  -v $(pwd):/data \
-  codonopt:1.0 \
-  --dna input.fasta \
-  --codon-xlsx /data/SelectedCodonTables.xlsx \
-  --sheet ecoli \
-  --gc-min 0.45 \
-  --gc-max 0.65 \
-  --avoid-codons CTA TAG \
-  --avoid-motifs GAATTC AAGCTT \
-  --optimization kleinbub \
-  --n 10 \
-  --out /data/output
-
-All input and output paths must be inside the mounted directory (for example /data).
-
----
-
-## Running CodonOpt Without Docker
-
-CodonOpt can be run directly using Python, but this requires RNAfold to be installed and available on the system PATH.
-
-python -m codonopt.main \
-  --dna input.fasta \
-  --codon-xlsx SelectedCodonTables.xlsx \
-  --sheet ecoli \
-  --out output
-
-Docker execution is strongly recommended for reproducibility.
-
----
-
-## Command-Line Arguments
-
---dna: Input DNA sequence (FASTA file or raw sequence)  
---codon-xlsx: Path to codon usage Excel file  
---sheet: Sheet name within the Excel file  
---gc-min: Minimum allowed GC content (0–1)  
---gc-max: Maximum allowed GC content (0–1)  
---avoid-codons: Codons to exclude  
---avoid-motifs: DNA motifs or restriction sites to avoid  
---optimization: unbiased or kleinbub  
---n: Number of optimized sequences to generate  
---out: Output directory  
---disable-rnafold: Disable RNAfold evaluation  
+    n,max_tries_per_replicate,kleinbub_search_limit,backtrack_window
+    10,50,500000,30
 
 ---
 
 ## Outputs
 
-CodonOpt generates FASTA files for each optimized sequence and a TSV file containing metrics for all sequences.
-```text
-output/
-├── optimized_001.fasta
-├── optimized_002.fasta
-└── report.tsv
-```
-The report TSV contains one row per sequence and includes sequence length, GC content, codon adaptation metrics, codon usage entropy, forbidden codon counts, motif violation counts, RNAfold minimum free energy (ΔG), RNAfold structure string, and ORF validation status.
+### FASTA
+
+optimized_sequences.fasta
+
+- Contains only successful designs
+- IDs encode job and replicate:
+
+    originalID|job0001|rep003
+
+### TSV
+
+metrics.tsv
+
+Includes successful and failed attempts.
+
+Key columns include:
+
+- optimization_mode
+- attempts_used
+- failure_reason
+- gc_content
+- max_homopolymer
+- All constraint and tuning parameters
 
 ---
 
-## RNAfold Integration
+## Reproducibility
 
-RNAfold (ViennaRNA) is used to compute RNA secondary structure metrics, including minimum free energy and dot-bracket structures. RNAfold is installed automatically in the Docker image and is enabled by default. It can be disabled using the --disable-rnafold flag.
+Set a seed for deterministic behavior:
 
-To verify RNAfold inside the Docker container:
-
-docker run --rm --entrypoint micromamba codonopt:1.0 run -n base RNAfold --version
+- Same inputs + same seed → same outputs
+- Replicates vary deterministically
 
 ---
 
-## Notes and Best Practices
+## Limits and Safety
 
-- Input DNA must be in frame
-- Start and stop codons are preserved
-- ORFs are strictly conserved
-- Codon tables must use DNA codons (not RNA codons)
-- Docker execution is recommended for reproducibility
+- Maximum 1000 input FASTA records per run
+- Bounded search prevents infinite loops
+- No silent failures
+
+---
+
+## When Constraints Are Truly Impossible
+
+codonopt distinguishes between:
+
+- Search exhaustion (fixable by tuning)
+- True incompatibility (intrinsic to the protein)
+
+Inspect failure_reason in metrics.tsv.
+
+---
+
+## Development
+
+    git clone https://github.com/aneu7373/codonopt.git
+    cd codonopt
+
+Key files:
+
+- codonopt/main.py
+- codonopt/core/optimizer.py
+- codonopt/io/codon_tables.py
+
+---
+
+## License
+
+MIT License (see LICENSE file).
+
+---
+
+## Citation
+
+If you use this tool academically, please cite:
+
+    codonopt — https://github.com/aneu7373/codonopt
+
+---
+
+Happy designing 🧬
