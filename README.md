@@ -1,6 +1,6 @@
-# codonopt
+# COTTAGE: Codon Optimization Tool That Aids Gene Expression
 
-**COTTAGE: Codon Optimization Tool That Aids Gene Expression** is a batch-capable codon optimization / back-translation tool designed for generating many candidate coding sequences under practical constraints (GC bounds, forbidden motifs, forbidden codons, homopolymer limits, codon-usage cutoffs, etc.).
+**COTTAGE** is a batch-capable codon optimization / back-translation tool designed for generating many candidate coding sequences under practical constraints (GC bounds, forbidden motifs, forbidden codons, homopolymer limits, codon-usage cutoffs, etc.).
 
 It supports:
 - DNA CDS FASTA inputs and protein FASTA inputs
