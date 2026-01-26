@@ -1,117 +1,235 @@
+# codonopt/core/optimizer.py
 
-from __future__ import annotations
+import random
+from typing import List, Tuple, Dict
 
-from typing import Any, Dict, Iterable, List, Mapping, Sequence, Tuple
-
-from codonopt.core.orf import validate_orf
-from codonopt.metrics.basic import gc_content, shannon_entropy
-from codonopt.metrics.motifs import count_hits
-from codonopt.metrics.rnafold import rnafold_mfe, rnafold_mfe_5p
-from codonopt.core.scoring import score_candidate
-from codonopt.core.generation import generate_candidate
+from codonopt.core.generation import filter_codons_for_constraints
+from codonopt.exceptions import ConstraintError
+from codonopt.utils import calculate_gc
 
 
-def _get_weight(weights: Mapping[str, float], key: str, default: float = 0.0) -> float:
-    return float(weights.get(key, default)) if weights is not None else default
+def _weighted_choice(codons: List[str], weights: List[float]) -> str:
+    if not codons:
+        raise ConstraintError("No candidate codons available after filtering.")
+    if len(codons) != len(weights):
+        raise ConstraintError("Internal error: codons/weights length mismatch.")
+    # random.choices allows non-normalized weights
+    return random.choices(codons, weights=weights, k=1)[0]
 
 
-def _violates_gc_bounds(gc: float, gc_min: float | None, gc_max: float | None) -> bool:
-    if gc_min is not None and gc < gc_min:
-        return True
-    if gc_max is not None and gc > gc_max:
-        return True
-    return False
-
-
-def _mean(values: Sequence[float]) -> float:
-    return sum(values) / max(1, len(values))
-
-
-def optimize(
-    dna: str,
-    aa_seq: Iterable[str],
-    codon_table: Dict[str, Sequence[Tuple[str, float]]],
-    forbidden_codons: set[str],
-    restriction_sites: List[str],
-    motifs: List[str],
-    n_out: int,
-    oversample: int,
-    weights: Mapping[str, float],
-    *,
-    max_trials: int | None = None,
-    rna_5p_window: int = 60,
-) -> List[Tuple[str, Dict[str, Any]]]:
+def _weighted_permutation(codons: List[str], weights: List[float]) -> List[str]:
     """
-    Generate many synonymous candidates, score them, and return the top N.
+    Return a weighted random ordering (without replacement), biased to try higher-weight codons earlier.
 
-    - Hard pre-filtering on GC bounds to avoid unnecessary RNAfold calls.
-    - Forbidden codons are best-effort avoided; unavoidable hits are penalized via weights["forbidden"].
-    - RNAfold calls are skipped entirely when both 'rna_5p' and 'rna_full' weights are 0.0.
+    Uses Efraimidis-Spirakis style keys: key = U^(1/w)
+    Higher weights tend to yield larger keys, thus appear earlier when sorting descending.
     """
-    candidates: List[Tuple[str, Dict[str, Any]]] = []
+    if not codons:
+        return []
+    if len(codons) != len(weights):
+        raise ConstraintError("Internal error: codons/weights length mismatch.")
 
-    target = max(1, n_out * max(1, oversample))
-    if max_trials is None:
-        max_trials = target * 50  # generous cap to prevent infinite loops
-
-    # Weights/knobs
-    gc_min = weights.get("gc_min")
-    gc_max = weights.get("gc_max")
-    use_rnafold = not (
-        _get_weight(weights, "rna_5p", 0.0) == 0.0
-        and _get_weight(weights, "rna_full", 0.0) == 0.0
-    )
-
-    # Normalize AA input
-    aa_str = "".join(aa_seq) if not isinstance(aa_seq, str) else aa_seq
-
-    trials = 0
-    while len(candidates) < target and trials < max_trials:
-        trials += 1
-
-        # 1) Generate candidate (frequency-weighted; avoid forbidden where possible)
-        seq, forbidden_hits, codon_freqs = generate_candidate(
-            aa_seq=aa_str, codon_table=codon_table, forbidden_codons=forbidden_codons
-        )
-
-        # 2) Ensure synonymous integrity
-        if not validate_orf(seq, aa_str):
-            continue
-
-        # 3) Cheap metrics & early GC pruning
-        gc = gc_content(seq)
-        if (gc_min is not None or gc_max is not None) and _violates_gc_bounds(gc, gc_min, gc_max):
-            continue
-
-        mean_codon_freq = _mean(codon_freqs)
-        entropy = shannon_entropy(codon_freqs)
-
-        # 4) Medium-cost metrics
-        restriction_hits = count_hits(seq, restriction_sites)
-        motif_hits = count_hits(seq, motifs)
-
-        # 5) Expensive metrics (RNAfold) — only if enabled
-        if use_rnafold:
-            rna_5p = rnafold_mfe_5p(seq, window=rna_5p_window, disabled=False)
-            rna_full = rnafold_mfe(seq, disabled=False)
+    items = []
+    for c, w in zip(codons, weights):
+        w = float(w)
+        if w <= 0:
+            # extremely rare/invalid, shove to end deterministically
+            key = -1.0
         else:
-            rna_5p = 0.0
-            rna_full = 0.0
+            u = random.random()
+            # u ** (1/w)
+            key = u ** (1.0 / w)
+        items.append((key, c))
 
-        # 6) Score and keep
-        metrics: Dict[str, Any] = {
-            "gc": gc,
-            "mean_codon_freq": mean_codon_freq,
-            "entropy": entropy,
-            "restriction_hits": restriction_hits,
-            "motif_hits": motif_hits,
-            "rna_5p": rna_5p,
-            "rna_full": rna_full,
-            "forbidden_hits": forbidden_hits,
-        }
-        metrics["score"] = score_candidate(metrics, weights)
-        candidates.append((seq, metrics))
+    items.sort(reverse=True, key=lambda x: x[0])
+    return [c for _, c in items]
 
-    # Sort by descending score and return top N
-    candidates.sort(key=lambda x: x[1]["score"], reverse=True)
-    return candidates[:n_out]
+
+def optimize_sequence(
+    dna=None,
+    protein=None,
+    codon_table=None,
+    avoid_codons=None,
+    avoid_motifs=None,
+    max_homopolymer=5,
+    gc_min=None,
+    gc_max=None,
+    logger=None,
+    optimization_mode="kleinbub",
+    max_attempts=1000,
+    backtrack_window=10,
+    min_codon_fraction=0.05,
+):
+    """
+    optimization_mode:
+      - 'strict': greedy, retries per position, fast
+      - 'kleinbub': bounded backtracking search, higher yield, slower
+
+    codon_table must be:
+      dict: AA -> list of (codon, fraction)
+
+    min_codon_fraction:
+      excludes codons for an AA if fraction < cutoff.
+      default 0.05.
+    """
+    avoid_codons = avoid_codons or []
+    avoid_motifs = avoid_motifs or []
+
+    if protein is None:
+        raise ConstraintError("optimize_sequence requires protein input (DNA is translated upstream).")
+    if codon_table is None:
+        raise ConstraintError("codon_table is required.")
+
+    mode = (optimization_mode or "kleinbub").strip().lower()
+    if mode not in ("strict", "kleinbub"):
+        raise ConstraintError("optimization_mode must be 'strict' or 'kleinbub'")
+
+    try:
+        min_cf = float(min_codon_fraction)
+    except Exception:
+        raise ConstraintError(f"min_codon_fraction must be a float; got {min_codon_fraction!r}")
+    if min_cf < 0 or min_cf > 1:
+        raise ConstraintError(f"min_codon_fraction must be between 0 and 1; got {min_cf}")
+
+    # Build AA -> (codons, weights) after rarity cutoff
+    aa_codons: Dict[str, Tuple[List[str], List[float]]] = {}
+    for aa in set(protein):
+        rows = codon_table.get(aa, [])
+        if not rows:
+            raise ConstraintError(f"No codons available in codon table for amino acid '{aa}'")
+        filtered = [(c, float(fr)) for c, fr in rows if float(fr) >= min_cf]
+        if not filtered:
+            raise ConstraintError(
+                f"All codons for amino acid '{aa}' are below min_codon_fraction={min_cf}. "
+                f"Lower the cutoff or change the codon table."
+            )
+        codons = [c for c, _ in filtered]
+        weights = [fr for _, fr in filtered]
+        aa_codons[aa] = (codons, weights)
+
+    # ---------------------------
+    # STRICT MODE
+    # ---------------------------
+    if mode == "strict":
+        seq = ""
+        for aa in protein:
+            codons, weights = aa_codons[aa]
+            attempts = 0
+            while attempts < max_attempts:
+                # apply motif/homopolymer/codon constraints
+                valid_codons = filter_codons_for_constraints(
+                    codons, seq, avoid_codons, avoid_motifs, max_homopolymer
+                )
+                # map weights for valid codons
+                wmap = {c: w for c, w in zip(codons, weights)}
+                valid_weights = [wmap[c] for c in valid_codons]
+
+                codon = _weighted_choice(valid_codons, valid_weights)
+                candidate = seq + codon
+
+                gc = calculate_gc(candidate)
+                if ((gc_min is None or gc >= gc_min) and (gc_max is None or gc <= gc_max)):
+                    seq = candidate
+                    if logger:
+                        logger.debug(f"{aa} -> {codon} (strict)")
+                    break
+
+                attempts += 1
+
+            else:
+                raise ConstraintError(
+                    f"Strict optimization failed at amino acid '{aa}'. "
+                    f"Try optimization_mode=kleinbub or relax constraints."
+                )
+
+        return seq
+
+    # ---------------------------
+    # KLEINBUB MODE (bounded backtracking)
+    # ---------------------------
+    if backtrack_window < 1:
+        backtrack_window = 1
+
+    chosen: List[Tuple[str, str]] = []  # (aa, codon)
+    seq = ""
+    i = 0
+    total_steps = 0
+
+    # Treat max_attempts as total search budget
+    search_limit = int(max_attempts)
+
+    candidate_lists = [None] * len(protein)
+    candidate_index = [0] * len(protein)
+
+    while i < len(protein):
+        total_steps += 1
+        if total_steps > search_limit:
+            raise ConstraintError(
+                f"Kleinbub optimization exceeded search limit ({search_limit}). "
+                "Increase kleinbub_search_limit or relax constraints."
+            )
+
+        aa = protein[i]
+        codons, weights = aa_codons[aa]
+
+        # Build candidate list for this position given current prefix
+        if candidate_lists[i] is None:
+            valid_codons = filter_codons_for_constraints(
+                codons, seq, avoid_codons, avoid_motifs, max_homopolymer
+            )
+            if not valid_codons:
+                # force backtrack logic below
+                candidate_lists[i] = []
+                candidate_index[i] = 0
+            else:
+                wmap = {c: w for c, w in zip(codons, weights)}
+                valid_weights = [wmap[c] for c in valid_codons]
+                # weighted order: try higher-weight codons earlier (stochastic)
+                ordered = _weighted_permutation(valid_codons, valid_weights)
+                candidate_lists[i] = ordered
+                candidate_index[i] = 0
+
+        # If exhausted candidates: backtrack
+        if candidate_index[i] >= len(candidate_lists[i]):
+            candidate_lists[i] = None
+            candidate_index[i] = 0
+
+            if i == 0:
+                raise ConstraintError(
+                    "Kleinbub optimization could not satisfy constraints from the start. "
+                    "Constraints likely incompatible."
+                )
+
+            back_to = max(0, i - backtrack_window)
+
+            # rewind chosen list
+            while len(chosen) > back_to:
+                chosen.pop()
+
+            seq = "".join(c for (_, c) in chosen)
+
+            # reset positions from back_to onward
+            for j in range(back_to, len(protein)):
+                candidate_lists[j] = None
+                candidate_index[j] = 0
+
+            i = back_to
+            continue
+
+        # Try next candidate codon
+        codon = candidate_lists[i][candidate_index[i]]
+        candidate_index[i] += 1
+
+        candidate_seq = seq + codon
+        gc = calculate_gc(candidate_seq)
+        if (gc_min is not None and gc < gc_min) or (gc_max is not None and gc > gc_max):
+            continue
+
+        # Accept and advance
+        chosen.append((aa, codon))
+        seq = candidate_seq
+        if logger:
+            logger.debug(f"{aa} -> {codon} (kleinbub)")
+        i += 1
+
+    return seq

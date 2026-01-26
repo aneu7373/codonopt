@@ -1,14 +1,33 @@
-
 name: codonopt
+
 channels:
   - conda-forge
   - bioconda
-channel_priority: strict
+  - defaults
+
 dependencies:
+  # ---- Core language ----
   - python=3.11
-  - viennarna=2.6.*        # or >=2.5 if you prefer
-  - biopython=1.84
-  - pandas=2.2.*
-  - numpy=1.26.*
-  - tqdm=4.66.*
-  - openpyxl=3.1.*
+
+  # ---- Scientific stack ----
+  - numpy
+  - pandas
+  - scipy
+
+  # ---- Bioinformatics ----
+  - biopython
+  - cryptkeeper
+  - transtermhp
+
+  # ---- Utilities ----
+  - tqdm
+  - openpyxl
+  - xlrd
+  - pyyaml
+
+  # ---- System / runtime ----
+  - pip
+
+  # ---- Pip-only packages (if any) ----
+  - pip:
+      - typing-extensions

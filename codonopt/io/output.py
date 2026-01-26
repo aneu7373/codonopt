@@ -1,14 +1,8 @@
-import pandas as pd
+import os
 
-def write_outputs(results, fasta_path, tsv_path):
-    records = []
-
-    with open(fasta_path, "w") as fasta:
-        for i, (seq, metrics) in enumerate(results, 1):
-            fasta.write(f">variant_{i} score={metrics['score']:.3f}\n")
-            fasta.write(seq + "\n")
-
-            record = {"variant": i, **metrics}
-            records.append(record)
-
-    pd.DataFrame(records).to_csv(tsv_path, sep="\t", index=False)
+def write_sequence(seq, seq_id, out_dir, job_index):
+    job_dir = os.path.join(out_dir, f"job_{job_index:04d}")
+    os.makedirs(job_dir, exist_ok=True)
+    out_file = os.path.join(job_dir, "optimized.fasta")
+    with open(out_file, "w") as f:
+        f.write(f">{seq_id}\n{seq}\n")

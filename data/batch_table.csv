@@ -1,0 +1,2 @@
+﻿sequence,codon_table,avoid_codons,avoid_motifs,gc_min,gc_max,seed,n,max_tries_per_replicate,kleinbub_search_limit,backtrack_window,cryptkeeper_rbs_score_cutoff ,cryptkeeper_fail_score,cryptkeeper_ignore_first_nt,cryptkeeper_ignore_last_nt,cryptkeeper_pool_factor,cryptkeeper_max_pool
+/data/strep_protease.fasta,/data/codon_tables/Ecoli.xlsx,ATC|CAT,GAATTC,0.2,0.7,42,10,1000,300000,50,6,1000000,60,60,10,1000
