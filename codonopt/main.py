@@ -1,10 +1,8 @@
-# codonopt/main.py
-
 import os
 import csv
 import math
-import random
 import tempfile
+import hashlib
 from typing import Dict, Any, Iterable, List, Optional, Tuple
 
 from tqdm import tqdm
@@ -19,6 +17,7 @@ from codonopt.utils import (
     is_protein_sequence,
     calculate_gc,
     max_homopolymer_length,
+    verify_backtranslation_matches_protein,
 )
 from codonopt.core.optimizer import optimize_sequence
 from codonopt.io.codon_tables import load_codon_table_from_xlsx
@@ -389,16 +388,33 @@ def merge_defaults(args, row: Dict[str, Any], logger) -> Dict[str, Any]:
 # Candidate generation helpers
 # ---------------------------
 
-def _make_seed(job_seed: Optional[int], rep: int, attempt: int) -> None:
+def _stable_u32(s: str) -> int:
+    """Stable 32-bit hash of a string (independent of Python's built-in hash randomization)."""
+    h = hashlib.blake2b(s.encode("utf-8"), digest_size=8).digest()
+    return int.from_bytes(h, "little") & 0xFFFFFFFF
+
+
+def _candidate_seed(
+    job_seed: Optional[int],
+    job_idx: int,
+    record_id: str,
+    rep: int,
+    attempt: int,
+) -> Optional[int]:
+    """Deterministically derive a per-candidate seed from job + record + replicate + attempt."""
     if job_seed is None:
-        return
-    random.seed(job_seed + rep * 100000 + attempt)
+        return None
+    rid = _stable_u32(record_id)
+    # Mix fields with large multipliers to reduce collisions while keeping determinism.
+    return int(job_seed) + rid + (job_idx * 1_000_003) + (rep * 100_003) + int(attempt)
 
 
 def _generate_candidate(
     protein: str,
     job: Dict[str, Any],
     logger,
+    job_idx: int,
+    record_id: str,
     rep: int,
     attempt: int,
 ) -> Tuple[Optional[str], Optional[str]]:
@@ -406,7 +422,7 @@ def _generate_candidate(
     Returns (optimized_dna, failure_reason) where failure_reason is None on success.
     CryptKeeper is NOT run here (two-phase approach).
     """
-    _make_seed(job.get("seed"), rep=rep, attempt=attempt)
+    cand_seed = _candidate_seed(job.get("seed"), job_idx=job_idx, record_id=record_id, rep=rep, attempt=attempt)
     try:
         optimized = optimize_sequence(
             dna=None,
@@ -422,6 +438,7 @@ def _generate_candidate(
             max_attempts=job["kleinbub_search_limit"],
             backtrack_window=job["backtrack_window"],
             min_codon_fraction=job["min_codon_fraction"],
+            seed=cand_seed,
         )
         return optimized, None
     except ConstraintError as e:
@@ -508,11 +525,25 @@ def main():
             if is_protein_sequence(raw_seq):
                 protein = raw_seq
             else:
+                # DNA/RNA CDS input: validate, translate, reject internal stops, strip terminal stop if present
                 if len(raw_seq) % 3 != 0:
                     raise InputFormatError(
                         f"DNA record '{rec.id}' length ({len(raw_seq)}) not divisible by 3"
                     )
+
+                # Translate full length (do not stop early)
                 protein = str(Seq(raw_seq).translate(to_stop=False))
+
+                # If there are internal stops, that's not a valid CDS for codon optimization
+                if "*" in protein[:-1]:
+                    raise InputFormatError(
+                        f"DNA record '{rec.id}' translates with internal stop codon(s). "
+                        "Provide a valid CDS (no internal stops) or a protein FASTA."
+                    )
+
+                # Allow terminal stop codon and strip it to optimize the coding region only
+                if protein.endswith("*"):
+                    protein = protein[:-1]
 
             # ---------------------------
             # Two-phase logic when CryptKeeper is enabled
@@ -539,11 +570,23 @@ def main():
                         protein=protein,
                         job=job,
                         logger=logger,
+                        job_idx=job_idx,
+                        record_id=rec.id,
                         rep=pseudo_rep,
                         attempt=gen_attempts,
                     )
                     if optimized is None:
                         continue
+
+                    # NEW: ensure optimized DNA translates back to the same protein
+                    ok, reason, aa = verify_backtranslation_matches_protein(optimized, protein)
+                    if not ok:
+                        logger.debug(
+                            f"[{rec.id}] Rejecting candidate (AA mismatch): reason={reason}, "
+                            f"translated_len={len(aa) if aa else 'NA'}"
+                        )
+                        continue
+
                     pool.append({
                         "dna": optimized,
                         "gen_attempt": gen_attempts,
@@ -589,6 +632,59 @@ def main():
 
                     if rep <= len(passing):
                         dna = passing[rep - 1]["dna"]
+
+                        # NEW: belt-and-suspenders check right before output
+                        ok, reason, _aa = verify_backtranslation_matches_protein(dna, protein)
+                        if not ok:
+                            logger.error(
+                                f"[{seq_id}] Internal error: candidate passed but AA check failed at emit-time: {reason}"
+                            )
+                            # Treat as non-emitted replicate
+                            metrics_rows.append({
+                                "sequence_id": seq_id,
+                                "source_record": rec.id,
+                                "source_file": job["sequence"],
+                                "job_index": job_idx,
+                                "replicate": rep,
+
+                                "optimization_mode": job["optimization_mode"],
+                                "attempts_used": passing[rep - 1].get("gen_attempt", ""),
+                                "failure_reason": f"AA identity check failed at emit-time: {reason}",
+
+                                "length": "",
+                                "gc_content": "",
+                                "max_homopolymer": "",
+
+                                "gc_min": job.get("gc_min"),
+                                "gc_max": job.get("gc_max"),
+                                "max_homopolymer_limit": job["max_homopolymer"],
+                                "avoid_codons": "|".join(job["avoid_codons"]),
+                                "avoid_motifs": "|".join(job["avoid_motifs"]),
+
+                                "min_codon_fraction": job["min_codon_fraction"],
+
+                                "codon_table_path": job.get("codon_table_path", ""),
+                                "codon_table_sheet": job.get("codon_table_sheet") or "",
+
+                                "cryptkeeper_enable": 1,
+                                "cryptkeeper_rbs_score_cutoff": job["cryptkeeper_rbs_score_cutoff"],
+                                "cryptkeeper_fail_score": job["cryptkeeper_fail_score"],
+                                "cryptkeeper_threads": job["cryptkeeper_threads"],
+                                "cryptkeeper_ignore_first_nt": job["cryptkeeper_ignore_first_nt"],
+                                "cryptkeeper_ignore_last_nt": job["cryptkeeper_ignore_last_nt"],
+
+                                "cryptkeeper_pool_factor": job["cryptkeeper_pool_factor"],
+                                "cryptkeeper_max_pool": job["cryptkeeper_max_pool"],
+                                "cryptkeeper_pool_target": pool_target,
+                                "cryptkeeper_pool_generated": len(pool),
+                                "cryptkeeper_pool_screened": screened,
+
+                                "cryptkeeper_internal_site_count": "",
+                                "cryptkeeper_internal_site_positions": "",
+                                "cryptkeeper_max_internal_score": "",
+                            })
+                            continue
+
                         all_records.append(SeqRecord(Seq(dna), id=seq_id, description=""))
 
                         metrics_rows.append({
@@ -703,11 +799,19 @@ def main():
                         protein=protein,
                         job=job,
                         logger=logger,
+                        job_idx=job_idx,
+                        record_id=rec.id,
                         rep=rep,
                         attempt=attempt,
                     )
                     if optimized is None:
                         failure_reason = f"attempt {attempt}/{job['max_tries_per_replicate']}: {fail}"
+                        continue
+
+                    # NEW: enforce AA identity before accepting
+                    ok, reason, aa = verify_backtranslation_matches_protein(optimized, protein)
+                    if not ok:
+                        failure_reason = f"attempt {attempt}/{job['max_tries_per_replicate']}: AA check failed: {reason}"
                         continue
 
                     success = True
