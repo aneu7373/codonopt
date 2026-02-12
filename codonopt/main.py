@@ -272,6 +272,8 @@ def run_cryptkeeper_screen(
 # ---------------------------
 
 def merge_defaults(args, row: Dict[str, Any], logger) -> Dict[str, Any]:
+    from codonopt.defaults import DEFAULT_FORBIDDEN_MOTIFS, ALWAYS_FORBIDDEN_MOTIFS
+
     job = vars(args).copy()
 
     for k, v in row.items():
@@ -279,8 +281,42 @@ def merge_defaults(args, row: Dict[str, Any], logger) -> Dict[str, Any]:
             continue
         job[k] = v
 
+    # ---------------------------
+    # Parse motif & codon fields
+    # ---------------------------
+
     job["avoid_codons"] = _parse_list_field(job.get("avoid_codons"))
     job["avoid_motifs"] = _parse_list_field(job.get("avoid_motifs"))
+
+    def _normalize_motifs(motifs: List[str]) -> List[str]:
+        """
+        Normalize motifs:
+        - uppercase
+        - convert RNA U -> DNA T
+        - strip whitespace
+        """
+        out = []
+        for m in motifs:
+            if m is None:
+                continue
+            m2 = str(m).strip().upper().replace("U", "T")
+            if m2:
+                out.append(m2)
+        return out
+
+    # Normalize user-provided motifs
+    user_motifs = _normalize_motifs(job["avoid_motifs"])
+
+    # Normalize defaults
+    default_motifs = _normalize_motifs(DEFAULT_FORBIDDEN_MOTIFS)
+    always_motifs = _normalize_motifs(ALWAYS_FORBIDDEN_MOTIFS)
+
+    # Merge: user + defaults + always-forbidden
+    job["avoid_motifs"] = sorted(set(user_motifs) | set(default_motifs) | set(always_motifs))
+
+    # ---------------------------
+    # Numeric & mode parsing
+    # ---------------------------
 
     job["gc_min"] = _parse_float_or_none(job.get("gc_min"))
     job["gc_max"] = _parse_float_or_none(job.get("gc_max"))
@@ -288,86 +324,74 @@ def merge_defaults(args, row: Dict[str, Any], logger) -> Dict[str, Any]:
     job["max_homopolymer"] = _parse_int_or_default(job.get("max_homopolymer"), 5)
 
     seed_val = job.get("seed")
-    job["seed"] = int(seed_val) if seed_val not in (None, "", "nan", "NaN") else None
+    if seed_val in ("", None):
+        job["seed"] = None
+    else:
+        try:
+            job["seed"] = int(seed_val)
+        except Exception:
+            raise InputFormatError(f"seed must be an integer (or blank); got: {seed_val!r}")
 
-    job["optimization_mode"] = _parse_mode(job.get("optimization_mode"))
-    job["max_tries_per_replicate"] = _parse_int_or_default(job.get("max_tries_per_replicate"), 25)
-    job["kleinbub_search_limit"] = _parse_int_or_default(job.get("kleinbub_search_limit"), 200000)
-    job["backtrack_window"] = _parse_int_or_default(job.get("backtrack_window"), 10)
-
-    # v1.1 rarity cutoff
     job["min_codon_fraction"] = _parse_float_or_default(job.get("min_codon_fraction"), 0.05)
 
-    # v1.1 cryptkeeper
-    job["cryptkeeper_enable"] = _parse_boolish(
-        job.get("cryptkeeper_enable"),
-        default=bool(getattr(args, "cryptkeeper_enable", False)),
+    job["optimization_mode"] = _parse_mode(job.get("optimization_mode"))
+    job["include_stop_codon"] = _parse_boolish(job.get("include_stop_codon"), False)
+
+    job["cryptkeeper_enable"] = _parse_boolish(job.get("cryptkeeper_enable"), False)
+    job["cryptkeeper_threads"] = _parse_int_or_default(job.get("cryptkeeper_threads"), 1)
+    job["cryptkeeper_rbs_score_cutoff"] = _parse_float_or_default(
+        job.get("cryptkeeper_rbs_score_cutoff"), 500.0
+    )
+    job["cryptkeeper_fail_score"] = _parse_float_or_default(
+        job.get("cryptkeeper_fail_score"), 6000.0
+    )
+    job["cryptkeeper_ignore_first_nt"] = _parse_int_or_default(
+        job.get("cryptkeeper_ignore_first_nt"), 30
+    )
+    job["cryptkeeper_ignore_last_nt"] = _parse_int_or_default(
+        job.get("cryptkeeper_ignore_last_nt"), 30
     )
 
-    # UPDATED DEFAULTS (calibrated)
-    job["cryptkeeper_rbs_score_cutoff"] = _parse_float_or_default(job.get("cryptkeeper_rbs_score_cutoff"), 500.0)
-    job["cryptkeeper_threads"] = _parse_int_or_default(job.get("cryptkeeper_threads"), 1)
-    job["cryptkeeper_fail_score"] = _parse_float_or_default(job.get("cryptkeeper_fail_score"), 6000.0)
-    job["cryptkeeper_ignore_first_nt"] = _parse_int_or_default(job.get("cryptkeeper_ignore_first_nt"), 30)
-    job["cryptkeeper_ignore_last_nt"] = _parse_int_or_default(job.get("cryptkeeper_ignore_last_nt"), 30)
+    job["cryptkeeper_pool_factor"] = _parse_float_or_default(
+        job.get("cryptkeeper_pool_factor"), 3.0
+    )
+    job["cryptkeeper_max_pool"] = _parse_int_or_default(
+        job.get("cryptkeeper_max_pool"), 200
+    )
 
-    # pooling (unchanged)
-    job["cryptkeeper_pool_factor"] = _parse_float_or_default(job.get("cryptkeeper_pool_factor"), 3.0)
-    job["cryptkeeper_max_pool"] = _parse_int_or_default(job.get("cryptkeeper_max_pool"), 200)
+    job["max_tries_per_replicate"] = _parse_int_or_default(
+        job.get("max_tries_per_replicate"), 25
+    )
+    job["kleinbub_search_limit"] = _parse_int_or_default(
+        job.get("kleinbub_search_limit"), 200000
+    )
+    job["backtrack_window"] = _parse_int_or_default(
+        job.get("backtrack_window"), 10
+    )
 
-    # Validate GC
-    if job["gc_min"] is not None and not (0.0 <= job["gc_min"] <= 1.0):
-        raise InputFormatError(f"gc_min must be between 0 and 1; got {job['gc_min']}")
-    if job["gc_max"] is not None and not (0.0 <= job["gc_max"] <= 1.0):
-        raise InputFormatError(f"gc_max must be between 0 and 1; got {job['gc_max']}")
-    if job["gc_min"] is not None and job["gc_max"] is not None and job["gc_min"] > job["gc_max"]:
-        raise InputFormatError("gc_min cannot be greater than gc_max")
+    job["codon_table_sheet"] = _normalize_sheet_name(job.get("codon_table_sheet"))
 
-    # Validate tuning knobs
-    if job["n"] < 1:
-        raise InputFormatError(f"n must be >= 1; got {job['n']}")
-    if job["max_tries_per_replicate"] < 1:
-        raise InputFormatError(f"max_tries_per_replicate must be >= 1; got {job['max_tries_per_replicate']}")
-    if job["kleinbub_search_limit"] < 1000:
-        raise InputFormatError("kleinbub_search_limit is too small; use >= 1000 (recommend 200000+)")
-    if job["backtrack_window"] < 1:
-        raise InputFormatError(f"backtrack_window must be >= 1; got {job['backtrack_window']}")
+    job["sequence"] = str(job.get("sequence", "")).strip()
 
-    if not (0.0 <= float(job["min_codon_fraction"]) <= 1.0):
-        raise InputFormatError(f"min_codon_fraction must be between 0 and 1; got {job['min_codon_fraction']}")
+    # IMPORTANT: don't overwrite a loaded codon table (dict) with a string
+    if isinstance(job.get("codon_table"), dict):
+        # already loaded; leave as-is
+        pass
+    else:
+        job["codon_table"] = str(job.get("codon_table", "")).strip()
 
-    if job["cryptkeeper_threads"] < 1:
-        raise InputFormatError("cryptkeeper_threads must be >= 1")
-    if job["cryptkeeper_ignore_first_nt"] < 0:
-        raise InputFormatError("cryptkeeper_ignore_first_nt must be >= 0")
-    if job["cryptkeeper_ignore_last_nt"] < 0:
-        raise InputFormatError("cryptkeeper_ignore_last_nt must be >= 0")
-    if job["cryptkeeper_fail_score"] < 0:
-        raise InputFormatError("cryptkeeper_fail_score must be >= 0")
+    if not job["sequence"]:
+        raise InputFormatError("Missing required 'sequence' parameter (path to FASTA/GenBank).")
+    ct = job.get("codon_table")
+    if not ct:
+        raise InputFormatError("Missing required 'codon_table' parameter (path to codon table XLSX).")
 
-    if job["cryptkeeper_pool_factor"] <= 0:
-        raise InputFormatError("cryptkeeper_pool_factor must be > 0")
-    if job["cryptkeeper_max_pool"] < 1:
-        raise InputFormatError("cryptkeeper_max_pool must be >= 1")
+# If codon_table is a dict, it's loaded; if it's a string, it's a path (still OK here).
+    if not isinstance(ct, (dict, str)):
+        raise InputFormatError(f"codon_table must be a path string or a loaded dict; got {type(ct).__name__}")
 
-    job["out"] = job.get("out") or "results"
 
-    # Codon table
-    codon_table_path = job.get("codon_table")
-    if not codon_table_path:
-        raise InputFormatError("Missing codon_table. Must be a path to a codon-table .xlsx file.")
-    if not os.path.exists(codon_table_path):
-        raise InputFormatError(f"Codon table file not found: {codon_table_path}")
-
-    sheet_name = _normalize_sheet_name(job.get("codon_table_sheet"))
-    job["codon_table_sheet"] = sheet_name
-    job["codon_table_path"] = codon_table_path
-    job["codon_table"] = load_codon_table_from_xlsx(codon_table_path, sheet_name=sheet_name)
-
-    # Sequence path
-    seq_path = job.get("sequence")
-    if not seq_path:
-        raise InputFormatError("Missing 'sequence' path.")
+    seq_path = job["sequence"]
     if not os.path.exists(seq_path):
         raise InputFormatError(f"Sequence file not found: {seq_path}")
 
@@ -378,10 +402,27 @@ def merge_defaults(args, row: Dict[str, Any], logger) -> Dict[str, Any]:
         f"cryptkeeper={job['cryptkeeper_enable']}, pool_factor={job['cryptkeeper_pool_factor']}, "
         f"max_pool={job['cryptkeeper_max_pool']}, ck_cutoff={job['cryptkeeper_rbs_score_cutoff']}, "
         f"ck_fail_score={job['cryptkeeper_fail_score']}, "
-        f"ignore_first_nt={job['cryptkeeper_ignore_first_nt']}, ignore_last_nt={job['cryptkeeper_ignore_last_nt']}, "
-        f"gc_min={job['gc_min']}, gc_max={job['gc_max']}, max_homopolymer={job['max_homopolymer']}"
+        f"ignore_first_nt={job['cryptkeeper_ignore_first_nt']}, "
+        f"ignore_last_nt={job['cryptkeeper_ignore_last_nt']}, "
+        f"gc_min={job['gc_min']}, gc_max={job['gc_max']}, "
+        f"max_homopolymer={job['max_homopolymer']}, "
+        f"default_motifs_added={len(default_motifs)}"
     )
+
     return job
+
+
+def pick_stop_codon(codon_table: Dict[str, Any]) -> str:
+    """
+    Pick highest-frequency stop codon from codon table.
+    Falls back to TAA if none found.
+    """
+    for key in ("*", "STOP", "Stop", "stop"):
+        rows = codon_table.get(key)
+        if rows:
+            best = max(rows, key=lambda x: float(x[1]))
+            return str(best[0]).upper()
+    return "TAA"
 
 
 # ---------------------------
@@ -418,16 +459,26 @@ def _generate_candidate(
     rep: int,
     attempt: int,
 ) -> Tuple[Optional[str], Optional[str]]:
-    """
-    Returns (optimized_dna, failure_reason) where failure_reason is None on success.
-    CryptKeeper is NOT run here (two-phase approach).
-    """
+
+    # Ensure codon table is loaded (dict) before optimization
+    ct = job.get("codon_table")
+    if isinstance(ct, str):
+        try:
+            ct = load_codon_table_from_xlsx(ct, sheet_name=job.get("codon_table_sheet"))
+            job["codon_table"] = ct  # cache it
+        except Exception as e:
+            return None, f"Failed to load codon table from path {job.get('codon_table')!r}: {e}"
+
+    if not isinstance(ct, dict):
+        return None, f"codon_table must be a dict after loading; got type={type(ct).__name__}"
+
     cand_seed = _candidate_seed(job.get("seed"), job_idx=job_idx, record_id=record_id, rep=rep, attempt=attempt)
+
     try:
         optimized = optimize_sequence(
             dna=None,
             protein=protein,
-            codon_table=job["codon_table"],
+            codon_table=ct,  # <-- use the verified dict
             avoid_codons=job["avoid_codons"],
             avoid_motifs=job["avoid_motifs"],
             max_homopolymer=job["max_homopolymer"],
@@ -542,8 +593,11 @@ def main():
                     )
 
                 # Allow terminal stop codon and strip it to optimize the coding region only
+                had_terminal_stop = False
                 if protein.endswith("*"):
+                    had_terminal_stop = True
                     protein = protein[:-1]
+
 
             # ---------------------------
             # Two-phase logic when CryptKeeper is enabled
@@ -579,7 +633,11 @@ def main():
                         continue
 
                     # NEW: ensure optimized DNA translates back to the same protein
-                    ok, reason, aa = verify_backtranslation_matches_protein(optimized, protein)
+                    ok, reason, aa = verify_backtranslation_matches_protein(
+                                        optimized,
+                                        protein,
+                                        allow_terminal_stop=job.get("include_stop_codon", False)
+                                    )
                     if not ok:
                         logger.debug(
                             f"[{rec.id}] Rejecting candidate (AA mismatch): reason={reason}, "
@@ -631,15 +689,25 @@ def main():
                     seq_id = f"{rec.id}|job{job_idx:04d}|rep{rep:03d}"
 
                     if rep <= len(passing):
-                        dna = passing[rep - 1]["dna"]
+                        dna_core = passing[rep - 1]["dna"]
 
-                        # NEW: belt-and-suspenders check right before output
-                        ok, reason, _aa = verify_backtranslation_matches_protein(dna, protein)
+                        # Optionally append terminal stop codon (excluded from constraints by design)
+                        if job.get("include_stop_codon", False):
+                            stop = pick_stop_codon(job["codon_table"])
+                            dna_out = dna_core + stop
+                        else:
+                            dna_out = dna_core
+
+                        # Belt-and-suspenders AA check on the ACTUAL emitted DNA
+                        ok, reason, _aa = verify_backtranslation_matches_protein(
+                            dna_out,
+                            protein,
+                            allow_terminal_stop=job.get("include_stop_codon", False),
+                        )
                         if not ok:
                             logger.error(
                                 f"[{seq_id}] Internal error: candidate passed but AA check failed at emit-time: {reason}"
                             )
-                            # Treat as non-emitted replicate
                             metrics_rows.append({
                                 "sequence_id": seq_id,
                                 "source_record": rec.id,
@@ -685,7 +753,8 @@ def main():
                             })
                             continue
 
-                        all_records.append(SeqRecord(Seq(dna), id=seq_id, description=""))
+                        # SUCCESS: write output + metrics using dna_out (not optimized)
+                        all_records.append(SeqRecord(Seq(dna_out), id=seq_id, description=""))
 
                         metrics_rows.append({
                             "sequence_id": seq_id,
@@ -698,9 +767,9 @@ def main():
                             "attempts_used": passing[rep - 1].get("gen_attempt", ""),
                             "failure_reason": "",
 
-                            "length": len(dna),
-                            "gc_content": calculate_gc(dna),
-                            "max_homopolymer": max_homopolymer_length(dna),
+                            "length": len(dna_out),
+                            "gc_content": calculate_gc(dna_out),
+                            "max_homopolymer": max_homopolymer_length(dna_out),
 
                             "gc_min": job.get("gc_min"),
                             "gc_max": job.get("gc_max"),
@@ -730,6 +799,7 @@ def main():
                             "cryptkeeper_internal_site_positions": passing[rep - 1].get("cryptkeeper_internal_site_positions", ""),
                             "cryptkeeper_max_internal_score": passing[rep - 1].get("cryptkeeper_max_internal_score", ""),
                         })
+
                     else:
                         metrics_rows.append({
                             "sequence_id": seq_id,
@@ -779,9 +849,7 @@ def main():
                             "cryptkeeper_internal_site_positions": "",
                             "cryptkeeper_max_internal_score": "",
                         })
-
-                continue
-
+        if not job["cryptkeeper_enable"]:
             # ---------------------------
             # Fast path when CryptKeeper is disabled
             # ---------------------------
@@ -809,7 +877,11 @@ def main():
                         continue
 
                     # NEW: enforce AA identity before accepting
-                    ok, reason, aa = verify_backtranslation_matches_protein(optimized, protein)
+                    ok, reason, aa = verify_backtranslation_matches_protein(
+                        optimized,
+                        protein,
+                        allow_terminal_stop=job.get("include_stop_codon", False)
+                    )
                     if not ok:
                         failure_reason = f"attempt {attempt}/{job['max_tries_per_replicate']}: AA check failed: {reason}"
                         continue
@@ -819,6 +891,8 @@ def main():
                     break
 
                 if success and optimized is not None:
+                    if job.get("include_stop_codon", False):
+                        optimized = optimized + pick_stop_codon(job["codon_table"])
                     all_records.append(SeqRecord(Seq(optimized), id=seq_id, description=""))
                     metrics_rows.append({
                         "sequence_id": seq_id,

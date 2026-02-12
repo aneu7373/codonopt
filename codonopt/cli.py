@@ -21,6 +21,11 @@ def get_cli_args():
         default=None,
         help="Optional sheet name in the codon table XLSX (single-sequence mode).",
     )
+    parser.add_argument(
+        "--include-stop-codon",
+        action="store_true",
+        help="Append terminal stop codon from codon table after optimization"
+    ) 
 
     # Outputs
     parser.add_argument("--out", default="results", help="Output directory.")
